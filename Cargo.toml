@@ -1,6 +1,6 @@
 [package]
-name = "sqlite-multi-cluster-lib"
-description = ""
+name = "sqlite-tenant"
+description = "A libary for managing multiple sqlite databases with ease"
 version = "0.1.0"
 edition = "2021"
 publish = false
