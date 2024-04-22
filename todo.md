@@ -1,11 +1,15 @@
 # Todo list
 
-- [ ] Library config setup
-- [ ] Add tracing
-- [ ] Add threading (research if needed)
-- [ ] Add example project
-- [ ] more test
-- [ ] remove `.unwrap()` in the code and handle errors as return types only
+- [ ] Improve error handling with custom error types
+- [ ] Documentation for public functions and structs
+- [ ] Configuration options for customizable behavior
+- [ ] Logging support for visibility into internal operations
+- [ ] Migration support for managing schema changes
+- [ ] Mechanisms for tenant data isolation
+- [ ] Comprehensive unit tests covering all edge cases
+- [ ] Integration tests for real-world scenarios
+- [ ] Example usage demonstrating various scenarios
+- [ ] Engage with the Rust community for feedback and contributions
 
 
 ## Known Bugs
