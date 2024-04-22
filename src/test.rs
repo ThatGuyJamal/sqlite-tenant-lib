@@ -1,16 +1,20 @@
 #[cfg(test)]
-mod tests {
-    use rusqlite::*;
-    use crate::*;
+mod tests
+{
+    use std::path::Path;
+
+    use crate::prelude::*;
 
     #[test]
-    fn test_tenant_connection_open_in_memory() {
+    fn test_tenant_connection_open_in_memory()
+    {
         let db = TenantConnection::open(None::<&Path>).unwrap();
         assert_eq!(db.connection.is_busy(), false);
     }
 
     #[test]
-    fn test_multi_tenant_manager_add_remove_tenant() {
+    fn test_multi_tenant_manager_add_remove_tenant()
+    {
         let manager = MultiTenantManager::new();
 
         // Add a tenant
@@ -28,14 +32,16 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct Person {
+    struct Person
+    {
         id: i32,
         name: String,
         data: Option<Vec<u8>>,
     }
 
     #[test]
-    fn test_multi_tenant_manager_with_two_tenants() {
+    fn test_multi_tenant_manager_with_two_tenants()
+    {
         // Create a new multi-tenant manager
         let manager = MultiTenantManager::new();
 
@@ -60,13 +66,15 @@ mod tests {
         // Query data from the first tenant's database
         let mut stmt1 = conn1.connection.prepare("SELECT id, name, data FROM person").unwrap();
 
-        let person_iter1 = stmt1.query_map([], |row| {
-            Ok(Person {
-                id: row.get(0).unwrap(),
-                name: row.get(1).unwrap(),
-                data: row.get(2).unwrap(),
+        let person_iter1 = stmt1
+            .query_map([], |row| {
+                Ok(Person {
+                    id: row.get(0).unwrap(),
+                    name: row.get(1).unwrap(),
+                    data: row.get(2).unwrap(),
+                })
             })
-        }).unwrap();
+            .unwrap();
 
         // Assert that the inserted data for the first tenant is present
         let mut found_person_1 = false;
@@ -81,13 +89,15 @@ mod tests {
 
         // Query data from the second tenant's database
         let mut stmt2 = conn2.connection.prepare("SELECT id, name, data FROM person").unwrap();
-        let person_iter2 = stmt2.query_map([], |row| {
-            Ok(Person {
-                id: row.get(0).unwrap(),
-                name: row.get(1).unwrap(),
-                data: row.get(2).unwrap(),
+        let person_iter2 = stmt2
+            .query_map([], |row| {
+                Ok(Person {
+                    id: row.get(0).unwrap(),
+                    name: row.get(1).unwrap(),
+                    data: row.get(2).unwrap(),
+                })
             })
-        }).unwrap();
+            .unwrap();
 
         // Assert that the inserted data for the second tenant is present
         let mut found_person_2 = false;
@@ -102,16 +112,20 @@ mod tests {
     }
 
     // Helper function to insert a person into the database
-    fn insert_person(conn: &TenantConnection, id: i32, name: &str) -> SQLResult<()> {
-        conn.connection.execute("INSERT INTO person (id, name) VALUES (?1, ?2)", params![id, name])
+    fn insert_person(conn: &TenantConnection, id: i32, name: &str) -> SQLResult<()>
+    {
+        conn.connection
+            .execute("INSERT INTO person (id, name) VALUES (?1, ?2)", params![id, name])
             .map(|_| ())
     }
 
     // Helper function to create the person table in the database if it does not exist
-    fn create_person_table(manager: &MultiTenantManager, tenant_id: &str) -> SQLResult<()> {
+    fn create_person_table(manager: &MultiTenantManager, tenant_id: &str) -> SQLResult<()>
+    {
         if let Some(conn) = manager.get_connection(tenant_id).unwrap().as_ref() {
             // Check if the person table exists
-            let table_exists: bool = conn.connection
+            let table_exists: bool = conn
+                .connection
                 .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'person'")
                 .and_then(|mut stmt| stmt.query_row([], |_| Ok(true)))
                 .unwrap_or(false);
@@ -130,5 +144,4 @@ mod tests {
         }
         Ok(())
     }
-
 }
