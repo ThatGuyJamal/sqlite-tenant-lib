@@ -6,3 +6,7 @@
 - [ ] Add example project
 - [ ] more test
 - [ ] remove `.unwrap()` in the code and handle errors as return types only
+
+
+## Known Bugs
+

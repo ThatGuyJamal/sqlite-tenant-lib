@@ -1,7 +1,7 @@
 ///! Hello world!
 pub mod prelude;
 pub mod tenant;
-mod test;
+pub use tenant::*;
 
 pub type SQLError = rusqlite::Error;
 pub type DynamicStdError = Box<dyn std::error::Error>;

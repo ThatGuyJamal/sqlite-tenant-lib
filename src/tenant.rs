@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use rusqlite::{Connection, Statement, ToSql};
+use rusqlite::{params, Connection, Statement, ToSql};
 
 use crate::{DynamicStdError, SQLResult};
 
@@ -13,12 +13,25 @@ const STATEMENT_CREATE_MASTER_DB: &str = "
     CREATE TABLE IF NOT EXISTS tenants (
         id TEXT PRIMARY KEY,
         tenant_id TEXT,
-        tenant_path
-        tenant_has_path INTEGER
+        tenant_path TEXT,
+        tenant_has_path INTEGER,
         created_at TEXT
     )";
 
 const STATEMENT_SELECT_TENANTS_ON_LOAD: &str = "SELECT id, tenant_path, tenant_has_path FROM tenants";
+
+#[allow(dead_code)]
+#[derive(Debug)]
+/// Rust type representation of our SQL master table.
+pub(crate) struct MasterDbTable
+{
+    id: String,
+    tenant_id: String,
+    tenant_path: String,
+    // 0 = false, 1 = true
+    tenant_has_path: i64,
+    created_at: String,
+}
 
 #[derive(Clone)]
 pub struct TenantConnection
@@ -57,22 +70,26 @@ pub struct MultiTenantManager
 
 impl MultiTenantManager
 {
-    pub fn new() -> Self
+    /// Created a new tenant manager.
+    ///
+    /// A path can be used to create a custom name for the master database. By default, master,sqlite is used.
+    pub fn new(path: Option<&str>) -> MultiTenantManager
     {
-        let master_db = match Connection::open("master.sqlite") {
+        let db_path = path.unwrap_or("master.sqlite");
+        let master_db = match Connection::open(db_path) {
             Ok(conn) => {
-                Self::init_master_db(&conn).expect("Failed to init the master.sqlite db");
+                MultiTenantManager::init_master_db(&conn).expect("Failed to init the master.sqlite db");
                 conn
             }
             Err(e) => panic!("{}", e),
         };
 
-        let tenants = match Self::load_tenants(&master_db) {
+        let tenants = match MultiTenantManager::load_tenants(&master_db) {
             Ok(tenants) => tenants,
             Err(e) => panic!("Failed to load tenants: {}", e),
         };
 
-        Self {
+        MultiTenantManager {
             master_db,
             tenants: Arc::new(RwLock::new(tenants)),
         }
@@ -91,7 +108,7 @@ impl MultiTenantManager
     fn load_tenants(master_db: &Connection) -> SQLResult<HashMap<TenantId, TenantConnection>>
     {
         let mut statement: Statement = master_db.prepare(STATEMENT_SELECT_TENANTS_ON_LOAD)?;
-        
+
         // see - https://docs.rs/rusqlite/0.31.0/rusqlite/trait.Params.html#dynamic-parameter-list
         let rows = statement.query_map::<_, &[&dyn ToSql], _>(&[], |row| {
             let id: String = row.get(0)?;
@@ -133,6 +150,16 @@ impl MultiTenantManager
 
         tenants.insert(tenant_id.to_string(), connection);
 
+        self.master_db.execute(
+            "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path, created_at) VALUES (?1, ?2, ?3, \
+             CURRENT_TIMESTAMP)",
+            params![
+                tenant_id,
+                path.as_ref().and_then(|p| p.to_str()).map(|p| p.to_string()),
+                path.is_some()
+            ],
+        )?;
+
         Ok(())
     }
 
@@ -141,6 +168,8 @@ impl MultiTenantManager
     {
         let mut tenants = self.tenants.write().unwrap();
         if let Some(_) = tenants.remove(tenant_id) {
+            self.master_db
+                .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])?;
             Ok(())
         } else {
             Err(DynamicStdError::from(format!("Tenant '{}' not found", tenant_id)))
@@ -160,8 +189,52 @@ impl MultiTenantManager
     }
 
     /// Gets the current amount of tenants in the database.
-    pub fn tenant_size(self) -> usize
+    pub fn tenant_size(&self) -> usize
     {
         self.tenants.read().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+mod tests
+{
+    use std::fs;
+    use std::time::Duration;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn test_master_db_setup()
+    {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let db_path = temp_dir.path().join("master_test_1.sqlite");
+        let _ = MultiTenantManager::new(Some(db_path.to_str().unwrap()));
+        assert!(db_path.exists(), "master.sqlite file does not exist");
+    }
+
+    #[test]
+    fn test_add_and_remove_tenants()
+    {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let db_path = temp_dir.path().join("master_test_2.sqlite");
+        let manager = MultiTenantManager::new(Some(db_path.to_str().unwrap()));
+
+        // Add 3 tenants
+        manager.add_tenant("tenant1", None).expect("Failed to add tenant1");
+        manager.add_tenant("tenant2", None).expect("Failed to add tenant2");
+        manager.add_tenant("tenant3", None).expect("Failed to add tenant3");
+
+        // Check if the size of tenants hashmap is 3
+        assert_eq!(manager.tenant_size(), 3);
+
+        // Remove the tenants
+        manager.remove_tenant("tenant1").expect("Failed to remove tenant1");
+        manager.remove_tenant("tenant2").expect("Failed to remove tenant2");
+        manager.remove_tenant("tenant3").expect("Failed to remove tenant3");
+
+        // Check if the size of tenants hashmap is 0 after removal
+        assert_eq!(manager.tenant_size(), 0);
     }
 }
