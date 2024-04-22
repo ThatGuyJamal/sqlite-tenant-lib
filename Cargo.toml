@@ -7,6 +7,8 @@ publish = false
 
 [dependencies]
 rusqlite = { version = "0.31.0", features = ["bundled"] }
+log = { version = "0.4.21" }
+flexi_logger = { version = "0.28.0" }
 
 [dev-dependencies]
 tempfile = "3.10.1"
