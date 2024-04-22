@@ -1,6 +1,8 @@
 ///! Hello world!
 pub mod prelude;
+mod statements;
 pub mod tenant;
+
 pub use tenant::*;
 
 pub type SQLError = rusqlite::Error;
