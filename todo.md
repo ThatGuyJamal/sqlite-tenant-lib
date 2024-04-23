@@ -1,6 +1,6 @@
 # Todo list
 
-- [ ] Improve error handling with custom error types
+- [x] Improve error handling with custom error types
 - [ ] Documentation for public functions and structs
 - [ ] Configuration options for customizable behavior
 - [ ] Logging support for visibility into internal operations

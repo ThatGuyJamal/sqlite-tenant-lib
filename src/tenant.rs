@@ -1,11 +1,13 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use flexi_logger::{FileSpec, Logger, LoggerHandle};
+use log::{debug, error, info, trace, warn};
 use rusqlite::{params, Connection, Statement, ToSql};
 
 use crate::statements::SqlStatement;
-use crate::{DynamicStdError, SQLResult};
+use crate::{Configuration, DynamicStdError, LogLevel, MultiTenantError, SQLResult};
 
 type TenantId = String;
 
@@ -55,16 +57,16 @@ pub struct MultiTenantManager
     /// The master database manages all the data for other tenants such as lookups, permissions, etc.
     pub(crate) master_db: Connection,
     pub(crate) tenants: Arc<RwLock<HashMap<TenantId, TenantConnection>>>,
+    pub(super) logger: Option<LoggerHandle>,
+    pub(super) config: Configuration,
 }
 
 impl MultiTenantManager
 {
     /// Created a new tenant manager.
-    ///
-    /// A path can be used to create a custom name for the master database. By default, master,sqlite is used.
-    pub fn new(path: Option<&str>) -> MultiTenantManager
+    pub fn new(config: Configuration) -> MultiTenantManager
     {
-        let db_path = path.unwrap_or("master.sqlite");
+        let db_path = config.master_db_path.clone().unwrap_or(PathBuf::new().join("master.sqlite"));
         let master_db = match Connection::open(db_path) {
             Ok(conn) => {
                 MultiTenantManager::init_master_db(&conn).expect("Failed to init the master.sqlite db");
@@ -78,10 +80,110 @@ impl MultiTenantManager
             Err(e) => panic!("Failed to load tenants: {}", e),
         };
 
-        MultiTenantManager {
+        let logger = if let Some(log_level) = config.log_level.clone() {
+            // If log_level is Some, initialize the logger
+            match Logger::try_with_str(log_level.as_str()) {
+                Ok(logger_builder) => {
+                    match logger_builder
+                        .log_to_file(FileSpec::default().directory("logs"))
+                        .duplicate_to_stdout(log_level.as_dup())
+                        .format(flexi_logger::detailed_format)
+                        .start()
+                    {
+                        Ok(logger_handle) => Some(logger_handle),
+                        Err(err) => {
+                            eprintln!("Error starting logger: {}", err);
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Error creating logger: {}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+
+        let s = MultiTenantManager {
             master_db,
             tenants: Arc::new(RwLock::new(tenants)),
+            logger,
+            config: config.clone(),
+        };
+
+        s.log("MultiTenantManager Initialized");
+
+        Self {
+            master_db: s.master_db,
+            tenants: s.tenants,
+            logger: s.logger,
+            config: s.config,
         }
+    }
+
+    /// Adds a new tenant to the manager
+    ///
+    /// `tenant_id` - used to track a connection to a sqlite db. ID generation should be handled by the library user.
+    ///
+    /// `path` - to the db file. If `None` is passed, the tenant will be created as an in-memory database.
+    pub fn add_tenant(&self, tenant_id: &str, path: Option<&Path>) -> SQLResult<(), MultiTenantError>
+    {
+        let mut tenants = self.tenants.write().unwrap();
+
+        if tenants.contains_key(tenant_id) {
+            return Err(MultiTenantError::TenantAlreadyExists(tenant_id.to_string()));
+        }
+
+        let connection = TenantConnection::open(path)?;
+
+        tenants.insert(tenant_id.to_string(), connection);
+
+        self.master_db.execute(
+            "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path, created_at) VALUES (?1, ?2, ?3, \
+             CURRENT_TIMESTAMP)",
+            params![
+                tenant_id,
+                path.as_ref().and_then(|p| p.to_str()).map(|p| p.to_string()),
+                path.is_some()
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Removes a tenant connection from the manager
+    pub fn remove_tenant(&self, tenant_id: &str) -> SQLResult<(), MultiTenantError>
+    {
+        let mut tenants = self.tenants.write().unwrap();
+        if let Some(_) = tenants.remove(tenant_id) {
+            self.master_db
+                .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])?;
+
+            Ok(())
+        } else {
+            return Err(MultiTenantError::TenantNotFound(tenant_id.to_string()));
+        }
+    }
+
+    /// Get a tenant connection based on id
+    pub fn get_connection(&self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, DynamicStdError>
+    {
+        let tenants = self.tenants.read().unwrap();
+
+        if let Some(connection) = tenants.get(tenant_id).cloned() {
+            Ok(Option::from(connection))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Gets the current amount of tenants in the database.
+    pub fn tenant_size(&self) -> usize
+    {
+        self.tenants.read().unwrap().len()
     }
 
     /// Creates the master database if none exist yet.
@@ -92,8 +194,7 @@ impl MultiTenantManager
         Ok(())
     }
 
-    /// Loads the current database tenants into memory. This way developers can get there handles.
-    /// todo - when we make the library config, this should be able to be disabled.
+    /// Loads the current database tenants into memory. This way developers can get their handles.
     fn load_tenants(master_db: &Connection) -> SQLResult<HashMap<TenantId, TenantConnection>>
     {
         let mut statement: Statement = master_db.prepare(SqlStatement::SelectTenantsOnLoad.as_str())?;
@@ -122,65 +223,19 @@ impl MultiTenantManager
         Ok(tenants)
     }
 
-    /// Adds a new tenant to the manager
-    ///
-    /// `tenant_id` - used to track a connection to a sqlite db. ID generation should be handled by the library user.
-    ///
-    /// `path` - to the db file. If `None` is passed, the tenant will be created as an in-memory database.
-    pub fn add_tenant(&self, tenant_id: &str, path: Option<&Path>) -> SQLResult<(), DynamicStdError>
+    /// Internal function used to log actions from the manager
+    fn log(&self, message: &str)
     {
-        let mut tenants = self.tenants.write().unwrap();
-
-        if tenants.contains_key(tenant_id) {
-            return Err(DynamicStdError::from(format!("Tenant '{}' already exists", tenant_id)));
+        if let Some(lvl) = &self.config.log_level {
+            match lvl {
+                LogLevel::Info => info!("{}", message),
+                LogLevel::Warn => warn!("{}", message),
+                LogLevel::Error => error!("{}", message),
+                LogLevel::Trace => trace!("{}", message),
+                LogLevel::Debug => debug!("{}", message),
+                _ => panic!("Invalid log level used!"),
+            }
         }
-
-        let connection = TenantConnection::open(path)?;
-
-        tenants.insert(tenant_id.to_string(), connection);
-
-        self.master_db.execute(
-            "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path, created_at) VALUES (?1, ?2, ?3, \
-             CURRENT_TIMESTAMP)",
-            params![
-                tenant_id,
-                path.as_ref().and_then(|p| p.to_str()).map(|p| p.to_string()),
-                path.is_some()
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Removes a tenant connection from the manager
-    pub fn remove_tenant(&self, tenant_id: &str) -> SQLResult<(), DynamicStdError>
-    {
-        let mut tenants = self.tenants.write().unwrap();
-        if let Some(_) = tenants.remove(tenant_id) {
-            self.master_db
-                .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])?;
-            Ok(())
-        } else {
-            Err(DynamicStdError::from(format!("Tenant '{}' not found", tenant_id)))
-        }
-    }
-
-    /// Get a tenant connection based on id
-    pub fn get_connection(&self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, DynamicStdError>
-    {
-        let tenants = self.tenants.read().unwrap();
-
-        if let Some(connection) = tenants.get(tenant_id).cloned() {
-            Ok(Option::from(connection))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Gets the current amount of tenants in the database.
-    pub fn tenant_size(&self) -> usize
-    {
-        self.tenants.read().unwrap().len()
     }
 }
 
@@ -196,7 +251,10 @@ mod tests
     {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
         let db_path = temp_dir.path().join("master_test_1.sqlite");
-        let _ = MultiTenantManager::new(Some(db_path.to_str().unwrap()));
+        let _ = MultiTenantManager::new(Configuration {
+            master_db_path: Some(db_path.clone()),
+            log_level: None,
+        });
         assert!(db_path.exists(), "master.sqlite file does not exist");
     }
 
@@ -205,7 +263,11 @@ mod tests
     {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
         let db_path = temp_dir.path().join("master_test_2.sqlite");
-        let manager = MultiTenantManager::new(Some(db_path.to_str().unwrap()));
+
+        let manager = MultiTenantManager::new(Configuration {
+            master_db_path: Some(db_path),
+            log_level: None,
+        });
 
         // Add 3 tenants
         manager.add_tenant("tenant1", None).expect("Failed to add tenant1");
@@ -222,5 +284,29 @@ mod tests
 
         // Check if the size of tenants hashmap is 0 after removal
         assert_eq!(manager.tenant_size(), 0);
+    }
+
+    #[test]
+    fn test_logger_initialization() {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let db_path = temp_dir.path().join("master_test_3.sqlite");
+        let db_path2 = temp_dir.path().join("master_test_4.sqlite");
+        
+        // Test case 1: Log level is None
+        let config_none = Configuration {
+            master_db_path: Some(db_path),
+            log_level: None,
+        };
+        let manager_none = MultiTenantManager::new(config_none);
+        assert!(manager_none.logger.is_none(), "Logger should be None");
+
+        // Test case 2: Log level is Some(LogLevel::Info)
+        let config_info = Configuration {
+            master_db_path: Some(db_path2),
+            log_level: Some(LogLevel::Info),
+        };
+        
+        let manager_info = MultiTenantManager::new(config_info.clone());
+        assert!(manager_info.logger.is_some(), "Logger should be Some");
     }
 }
