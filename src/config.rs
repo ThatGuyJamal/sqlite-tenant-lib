@@ -10,7 +10,7 @@ pub enum LogLevel
     Error,
     Trace,
     Debug,
-    All,
+    // All,
 }
 
 impl LogLevel
@@ -23,7 +23,7 @@ impl LogLevel
             LogLevel::Error => "error",
             LogLevel::Trace => "trace",
             LogLevel::Debug => "debug",
-            LogLevel::All => "all",
+            // LogLevel::All => "all",
         }
     }
 
@@ -35,7 +35,7 @@ impl LogLevel
             LogLevel::Error => Duplicate::Error,
             LogLevel::Trace => Duplicate::Trace,
             LogLevel::Debug => Duplicate::Debug,
-            LogLevel::All => Duplicate::All,
+            // LogLevel::All => Duplicate::All,
         }
     }
 }

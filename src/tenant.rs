@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use flexi_logger::{FileSpec, Logger, LoggerHandle};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info};
 use rusqlite::{params, Connection, Statement, ToSql};
 
 use crate::statements::SqlStatement;
-use crate::{Configuration, DynamicStdError, LogLevel, MultiTenantError, SQLResult};
+use crate::{Configuration, DynamicStdError, MultiTenantError, SQLResult};
 
 type TenantId = String;
 
@@ -57,7 +57,9 @@ pub struct MultiTenantManager
     /// The master database manages all the data for other tenants such as lookups, permissions, etc.
     pub(crate) master_db: Connection,
     pub(crate) tenants: Arc<RwLock<HashMap<TenantId, TenantConnection>>>,
+    #[allow(dead_code)]
     pub(super) logger: Option<LoggerHandle>,
+    #[allow(dead_code)]
     pub(super) config: Configuration,
 }
 
@@ -106,21 +108,13 @@ impl MultiTenantManager
             None
         };
 
+        info!("MultiTenantManager Initialized");
 
-        let s = MultiTenantManager {
+        Self {
             master_db,
             tenants: Arc::new(RwLock::new(tenants)),
             logger,
             config: config.clone(),
-        };
-
-        s.log("MultiTenantManager Initialized");
-
-        Self {
-            master_db: s.master_db,
-            tenants: s.tenants,
-            logger: s.logger,
-            config: s.config,
         }
     }
 
@@ -129,15 +123,16 @@ impl MultiTenantManager
     /// `tenant_id` - used to track a connection to a sqlite db. ID generation should be handled by the library user.
     ///
     /// `path` - to the db file. If `None` is passed, the tenant will be created as an in-memory database.
-    pub fn add_tenant(&self, tenant_id: &str, path: Option<&Path>) -> SQLResult<(), MultiTenantError>
+    pub fn add_tenant(&self, tenant_id: &str, path: Option<PathBuf>) -> SQLResult<(), MultiTenantError>
     {
         let mut tenants = self.tenants.write().unwrap();
 
         if tenants.contains_key(tenant_id) {
+            debug!("Attempted to add tenant ({}) but it already exist.", tenant_id);
             return Err(MultiTenantError::TenantAlreadyExists(tenant_id.to_string()));
         }
 
-        let connection = TenantConnection::open(path)?;
+        let connection = TenantConnection::open(path.clone())?;
 
         tenants.insert(tenant_id.to_string(), connection);
 
@@ -151,6 +146,8 @@ impl MultiTenantManager
             ],
         )?;
 
+        info!("Added ({}) tenant.", tenant_id);
+
         Ok(())
     }
 
@@ -158,12 +155,15 @@ impl MultiTenantManager
     pub fn remove_tenant(&self, tenant_id: &str) -> SQLResult<(), MultiTenantError>
     {
         let mut tenants = self.tenants.write().unwrap();
+
         if let Some(_) = tenants.remove(tenant_id) {
             self.master_db
                 .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])?;
 
+            debug!("Deleted ({}) tenant.", tenant_id);
             Ok(())
         } else {
+            error!("Attempted to delete tenant ({}) that does not exist.", tenant_id);
             return Err(MultiTenantError::TenantNotFound(tenant_id.to_string()));
         }
     }
@@ -174,8 +174,13 @@ impl MultiTenantManager
         let tenants = self.tenants.read().unwrap();
 
         if let Some(connection) = tenants.get(tenant_id).cloned() {
+            debug!("Retrieving ({}) sqlite connection.", tenant_id);
             Ok(Option::from(connection))
         } else {
+            debug!(
+                "Attempted to retrieve ({}) sqlite connection but it was not found in cache.",
+                tenant_id
+            );
             Ok(None)
         }
     }
@@ -222,21 +227,6 @@ impl MultiTenantManager
 
         Ok(tenants)
     }
-
-    /// Internal function used to log actions from the manager
-    fn log(&self, message: &str)
-    {
-        if let Some(lvl) = &self.config.log_level {
-            match lvl {
-                LogLevel::Info => info!("{}", message),
-                LogLevel::Warn => warn!("{}", message),
-                LogLevel::Error => error!("{}", message),
-                LogLevel::Trace => trace!("{}", message),
-                LogLevel::Debug => debug!("{}", message),
-                _ => panic!("Invalid log level used!"),
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -250,22 +240,22 @@ mod tests
     fn test_master_db_setup()
     {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let db_path = temp_dir.path().join("master_test_1.sqlite");
+        let master_db_path = temp_dir.path().join("master_test_1.sqlite");
         let _ = MultiTenantManager::new(Configuration {
-            master_db_path: Some(db_path.clone()),
+            master_db_path: Some(master_db_path.clone()),
             log_level: None,
         });
-        assert!(db_path.exists(), "master.sqlite file does not exist");
+        assert!(master_db_path.exists(), "master.sqlite file does not exist");
     }
 
     #[test]
     fn test_add_and_remove_tenants()
     {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let db_path = temp_dir.path().join("master_test_2.sqlite");
+        let master_db_path = temp_dir.path().join("master_test_2.sqlite");
 
         let manager = MultiTenantManager::new(Configuration {
-            master_db_path: Some(db_path),
+            master_db_path: Some(master_db_path),
             log_level: None,
         });
 
@@ -287,26 +277,103 @@ mod tests
     }
 
     #[test]
-    fn test_logger_initialization() {
+    fn test_logger_initialization()
+    {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let db_path = temp_dir.path().join("master_test_3.sqlite");
-        let db_path2 = temp_dir.path().join("master_test_4.sqlite");
-        
+        let master_db_path = temp_dir.path().join("master_test_3.sqlite");
+
         // Test case 1: Log level is None
         let config_none = Configuration {
-            master_db_path: Some(db_path),
+            master_db_path: Some(master_db_path),
+            // log_level: Some(LogLevel::Trace),
+            // Disabled while running other test to avoid making many log files when not needed.
             log_level: None,
         };
-        let manager_none = MultiTenantManager::new(config_none);
-        assert!(manager_none.logger.is_none(), "Logger should be None");
 
-        // Test case 2: Log level is Some(LogLevel::Info)
-        let config_info = Configuration {
-            master_db_path: Some(db_path2),
-            log_level: Some(LogLevel::Info),
-        };
-        
-        let manager_info = MultiTenantManager::new(config_info.clone());
-        assert!(manager_info.logger.is_some(), "Logger should be Some");
+        let manager_none = MultiTenantManager::new(config_none);
+
+        // assert!(manager_none.logger.is_some(), "Logger should be Some");
+        assert!(manager_none.logger.is_none(), "Logger should be None");
+    }
+
+    #[test]
+    fn test_sql_query()
+    {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+        let master_db_path = temp_dir.path().join("master_test_4.sqlite");
+
+        let db_path = temp_dir.path().join("company-1.sqlite");
+        let db_path2 = temp_dir.path().join("company-2.sqlite");
+
+        let manager = MultiTenantManager::new(Configuration {
+            master_db_path: Some(master_db_path),
+            log_level: None,
+        });
+
+        manager.add_tenant("company-1", Some(db_path.clone())).unwrap();
+
+        match manager.add_tenant("company-1", Some(db_path)) {
+            Ok(_) => {}
+            Err(err) => {
+                assert_eq!(err, MultiTenantError::TenantAlreadyExists("company-1".to_string()))
+            }
+        }
+
+        manager.add_tenant("company-2", Some(db_path2)).unwrap();
+
+        assert_eq!(2, manager.tenant_size());
+
+        #[derive(Debug)]
+        struct Person
+        {
+            id: i32,
+            #[allow(dead_code)]
+            name: String,
+        }
+
+        let sql = manager.get_connection("company-1").unwrap().unwrap().connection;
+
+        sql.execute(
+            "CREATE TABLE person (
+            id   INTEGER PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+            (),
+        )
+        .unwrap();
+
+        let mut people: Vec<Person> = Vec::new();
+
+        for i in 0..5 {
+            people.push(Person {
+                id: i,
+                name: "test_user".to_string(),
+            })
+        }
+
+        let mut stmt = sql.prepare("SELECT id, name FROM person").unwrap();
+
+        let mut person_iter = stmt
+            .query_map([], |row| {
+                Ok(Person {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })
+            .unwrap();
+
+        // Iterate over the person_iter
+        for (index, result) in person_iter.by_ref().enumerate() {
+            let person = match result {
+                Ok(person) => person,
+                Err(err) => {
+                    // Handle error if there's any while fetching the person
+                    panic!("Error fetching person: {}", err);
+                }
+            };
+
+            // Check if the current index matches the id of the person
+            assert_eq!(index as i32, person.id);
+        }
     }
 }

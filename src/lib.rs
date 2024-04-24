@@ -14,7 +14,7 @@ pub type SQLError = rusqlite::Error;
 pub type DynamicStdError = Box<dyn Error>;
 pub type SQLResult<T, E = SQLError> = Result<T, E>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum MultiTenantError
 {
     TenantAlreadyExists(String),

@@ -2,7 +2,7 @@
 
 - [x] Improve error handling with custom error types
 - [ ] Documentation for public functions and structs
-- [ ] Configuration options for customizable behavior
+- [x] Configuration options for customizable behavior
 - [ ] Logging support for visibility into internal operations
 - [ ] Migration support for managing schema changes
 - [ ] Mechanisms for tenant data isolation
