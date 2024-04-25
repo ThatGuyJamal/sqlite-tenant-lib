@@ -1,5 +1,4 @@
 pub mod config;
-///! Hello world!
 pub mod prelude;
 mod statements;
 pub mod tenant;
@@ -45,7 +44,7 @@ impl From<rusqlite::Error> for MultiTenantError
     fn from(err: rusqlite::Error) -> Self
     {
         match err {
-            rusqlite::Error::QueryReturnedNoRows => MultiTenantError::TenantNotFound("".to_string()),
+            rusqlite::Error::QueryReturnedNoRows => MultiTenantError::TenantNotFound("No row data found.".to_string()),
             rusqlite::Error::SqliteFailure(_, msg) => {
                 if let Some(msg) = msg {
                     MultiTenantError::DatabaseError(msg.to_string())
@@ -53,6 +52,7 @@ impl From<rusqlite::Error> for MultiTenantError
                     MultiTenantError::DatabaseError("Failed to get database error message.".to_string())
                 }
             }
+            // todo - handle more errors
             _ => MultiTenantError::DatabaseError("Unknown database error".to_string()),
         }
     }
