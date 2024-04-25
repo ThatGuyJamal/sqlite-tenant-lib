@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use flexi_logger::{FileSpec, Logger, LoggerHandle};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, Statement, ToSql};
 
 use crate::statements::SqlStatement;
-use crate::{Configuration, DynamicStdError, MultiTenantError, SQLResult};
+use crate::{Configuration, DynamicStdError, MultiTenantError, SQLError, SQLResult};
 
 type TenantId = String;
 
@@ -66,16 +66,15 @@ pub struct MultiTenantManager
 impl MultiTenantManager
 {
     /// Created a new tenant manager.
-    pub fn new(config: Configuration) -> MultiTenantManager
+    pub fn new(config: Configuration) -> Result<Self, SQLError>
     {
-        let db_path = config.master_db_path.clone().unwrap_or(PathBuf::new().join("master.sqlite"));
-        let master_db = match Connection::open(db_path) {
-            Ok(conn) => {
-                MultiTenantManager::init_master_db(&conn).expect("Failed to init the master.sqlite db");
-                conn
-            }
-            Err(e) => panic!("{}", e),
-        };
+        let master_db = match config.master_db_path.clone() {
+            Some(path) => Connection::open(path),
+            None => Connection::open_in_memory(),
+        }
+        .unwrap_or_else(|e| panic!("Failed to open database: {}", e));
+
+        MultiTenantManager::init_master_db(&master_db)?;
 
         let tenants = match MultiTenantManager::load_tenants(&master_db) {
             Ok(tenants) => tenants,
@@ -87,7 +86,7 @@ impl MultiTenantManager
             match Logger::try_with_str(log_level.as_str()) {
                 Ok(logger_builder) => {
                     match logger_builder
-                        .log_to_file(FileSpec::default().directory("logs"))
+                        .log_to_file(FileSpec::default().directory(config.log_dir.clone().unwrap_or(PathBuf::from("logs"))))
                         .duplicate_to_stdout(log_level.as_dup())
                         .format(flexi_logger::detailed_format)
                         .start()
@@ -110,12 +109,12 @@ impl MultiTenantManager
 
         info!("MultiTenantManager Initialized");
 
-        Self {
+        Ok(Self {
             master_db,
             tenants: Arc::new(RwLock::new(tenants)),
             logger,
             config: config.clone(),
-        }
+        })
     }
 
     /// Adds a new tenant to the manager
@@ -137,8 +136,7 @@ impl MultiTenantManager
         tenants.insert(tenant_id.to_string(), connection);
 
         self.master_db.execute(
-            "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path, created_at) VALUES (?1, ?2, ?3, \
-             CURRENT_TIMESTAMP)",
+            SqlStatement::InsertAddTenant.as_str(),
             params![
                 tenant_id,
                 path.as_ref().and_then(|p| p.to_str()).map(|p| p.to_string()),
@@ -158,8 +156,7 @@ impl MultiTenantManager
 
         if let Some(_) = tenants.remove(tenant_id) {
             self.master_db
-                .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])?;
-
+                .execute(SqlStatement::DeleteRemoveTenant.as_str(), params![tenant_id])?;
             debug!("Deleted ({}) tenant.", tenant_id);
             Ok(())
         } else {
@@ -177,7 +174,7 @@ impl MultiTenantManager
             debug!("Retrieving ({}) sqlite connection.", tenant_id);
             Ok(Option::from(connection))
         } else {
-            debug!(
+            warn!(
                 "Attempted to retrieve ({}) sqlite connection but it was not found in cache.",
                 tenant_id
             );
@@ -235,15 +232,17 @@ mod tests
     use tempfile::tempdir;
 
     use super::*;
+    use crate::LogLevel;
 
     #[test]
     fn test_master_db_setup()
     {
         let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let master_db_path = temp_dir.path().join("master_test_1.sqlite");
+        let master_db_path = temp_dir.path().join("master.sqlite");
         let _ = MultiTenantManager::new(Configuration {
             master_db_path: Some(master_db_path.clone()),
             log_level: None,
+            log_dir: None,
         });
         assert!(master_db_path.exists(), "master.sqlite file does not exist");
     }
@@ -251,13 +250,12 @@ mod tests
     #[test]
     fn test_add_and_remove_tenants()
     {
-        let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let master_db_path = temp_dir.path().join("master_test_2.sqlite");
-
         let manager = MultiTenantManager::new(Configuration {
-            master_db_path: Some(master_db_path),
+            master_db_path: None,
             log_level: None,
-        });
+            log_dir: None,
+        })
+        .unwrap();
 
         // Add 3 tenants
         manager.add_tenant("tenant1", None).expect("Failed to add tenant1");
@@ -279,18 +277,15 @@ mod tests
     #[test]
     fn test_logger_initialization()
     {
-        let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let master_db_path = temp_dir.path().join("master_test_3.sqlite");
-
-        // Test case 1: Log level is None
         let config_none = Configuration {
-            master_db_path: Some(master_db_path),
+            master_db_path: None,
             // log_level: Some(LogLevel::Trace),
             // Disabled while running other test to avoid making many log files when not needed.
             log_level: None,
+            log_dir: None,
         };
 
-        let manager_none = MultiTenantManager::new(config_none);
+        let manager_none = MultiTenantManager::new(config_none).unwrap();
 
         // assert!(manager_none.logger.is_some(), "Logger should be Some");
         assert!(manager_none.logger.is_none(), "Logger should be None");
@@ -299,27 +294,23 @@ mod tests
     #[test]
     fn test_sql_query()
     {
-        let temp_dir = tempdir().expect("Failed to create temporary directory");
-        let master_db_path = temp_dir.path().join("master_test_4.sqlite");
-
-        let db_path = temp_dir.path().join("company-1.sqlite");
-        let db_path2 = temp_dir.path().join("company-2.sqlite");
-
         let manager = MultiTenantManager::new(Configuration {
-            master_db_path: Some(master_db_path),
+            master_db_path: None,
             log_level: None,
-        });
+            log_dir: None,
+        })
+        .unwrap();
 
-        manager.add_tenant("company-1", Some(db_path.clone())).unwrap();
+        manager.add_tenant("company-1", None).unwrap();
 
-        match manager.add_tenant("company-1", Some(db_path)) {
+        match manager.add_tenant("company-1", None) {
             Ok(_) => {}
             Err(err) => {
                 assert_eq!(err, MultiTenantError::TenantAlreadyExists("company-1".to_string()))
             }
         }
 
-        manager.add_tenant("company-2", Some(db_path2)).unwrap();
+        manager.add_tenant("company-2", None).unwrap();
 
         assert_eq!(2, manager.tenant_size());
 
