@@ -14,5 +14,3 @@
 
 
 ## Known Bugs
-
-- [Example](./examples/user-management.rs) is having problems saving colum id. Need to fix this from being null on tenant inserts...

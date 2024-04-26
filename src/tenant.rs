@@ -29,7 +29,7 @@ pub struct TenantConnection
 {
     #[allow(dead_code)]
     // Connection to the sqlite API.
-    pub(crate) connection: Arc<Connection>,
+    pub connection: Arc<Connection>,
 }
 
 impl TenantConnection
@@ -139,15 +139,18 @@ impl MultiTenantManager
         tx.execute(
             SqlStatement::InsertAddTenant.as_str(),
             params![
-            tenant_id,
-            path.as_ref().and_then(|p| p.to_str()).unwrap_or_default(), // Default to empty string if path is None
-            path.is_some()
-        ],
+                tenant_id,
+                path.as_ref().and_then(|p| p.to_str()).unwrap_or_default(), // Default to empty string if path is None
+                path.is_some()
+            ],
         )?;
 
         if let Err(err) = tx.commit() {
             debug!("Failed to commit transaction: {}", err);
-            return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+            return Err(MultiTenantError::DatabaseError(format!(
+                "Failed to commit transaction: {}",
+                err
+            )));
         }
 
         tenants.insert(tenant_id.to_string(), connection);
@@ -170,7 +173,10 @@ impl MultiTenantManager
 
             if let Err(err) = tx.commit() {
                 debug!("Failed to commit transaction: {}", err);
-                return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+                return Err(MultiTenantError::DatabaseError(format!(
+                    "Failed to commit transaction: {}",
+                    err
+                )));
             }
 
             debug!("Deleted ({}) tenant.", tenant_id);
@@ -180,7 +186,6 @@ impl MultiTenantManager
             return Err(MultiTenantError::TenantNotFound(tenant_id.to_string()));
         }
     }
-
 
     /// Get a tenant connection based on id
     pub fn get_connection(&self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, DynamicStdError>
@@ -209,12 +214,15 @@ impl MultiTenantManager
     fn init_master_db(conn: &mut Connection) -> SQLResult<(), MultiTenantError>
     {
         let tx = conn.transaction()?;
-        
+
         tx.execute(SqlStatement::CreateMasterDb.as_str(), [])?;
 
         if let Err(err) = tx.commit() {
             debug!("Failed to commit transaction: {}", err);
-            return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+            return Err(MultiTenantError::DatabaseError(format!(
+                "Failed to commit transaction: {}",
+                err
+            )));
         }
 
         Ok(())
@@ -227,24 +235,26 @@ impl MultiTenantManager
 
         // see - https://docs.rs/rusqlite/0.31.0/rusqlite/trait.Params.html#dynamic-parameter-list
         let rows = statement.query_map::<_, &[&dyn ToSql], _>(&[], |row| {
-            let id: String = row.get(0)?;
-            let path: Option<String> = row.get(1)?;
-            let has_path: bool = row.get(2)?;
+            let tenant_id: String = row.get(0)?;
+            let tenant_path: Option<String> = row.get(1)?;
+            let tenant_has_path: bool = row.get(2)?;
 
-            let connection: TenantConnection = if has_path {
-                TenantConnection::open(Some(path.expect("Expected path, but found None")))?
+            let connection: TenantConnection = if tenant_has_path {
+                TenantConnection::open(Some(tenant_path.expect("Expected path, but found None")))?
             } else {
                 TenantConnection::open(None::<&Path>)?
             };
 
-            Ok((id, connection))
+            Ok((tenant_id, connection))
         })?;
 
         let mut tenants = HashMap::<TenantId, TenantConnection>::new();
         for result in rows {
-            let (id, connection) = result?;
-            tenants.insert(id, connection);
+            let (tenant_id, connection) = result?;
+            tenants.insert(tenant_id, connection);
         }
+
+        debug!("Loaded {} tenants into cache from the master db.", tenants.len());
 
         Ok(tenants)
     }
@@ -317,8 +327,10 @@ mod tests
     #[test]
     fn test_sql_query()
     {
+        let temp_dir = tempdir().expect("Failed to create temporary directory");
+
         let mut manager = MultiTenantManager::new(Configuration {
-            master_db_path: None,
+            master_db_path: Some(temp_dir.path().join("master.sqlite")),
             log_level: None,
             log_dir: None,
         })
