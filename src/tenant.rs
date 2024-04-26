@@ -131,8 +131,6 @@ impl MultiTenantManager
             return Err(MultiTenantError::TenantAlreadyExists(tenant_id.to_string()));
         }
 
-        let connection = TenantConnection::open(path.clone())?;
-
         // Begin a transaction
         let tx = self.master_db.transaction()?;
 
@@ -153,6 +151,7 @@ impl MultiTenantManager
             )));
         }
 
+        let connection = TenantConnection::open(path.clone())?;
         tenants.insert(tenant_id.to_string(), connection);
 
         info!("Added ({}) tenant.", tenant_id);
@@ -165,7 +164,15 @@ impl MultiTenantManager
     {
         let mut tenants = self.tenants.write().unwrap();
 
-        if let Some(_) = tenants.remove(tenant_id) {
+        if let Some(tenant) = tenants.remove(tenant_id) {
+            // Close the connection held within the Arc
+            Arc::try_unwrap(tenant.connection)
+                .map_err(|_| MultiTenantError::DatabaseError(format!("Failed to unwrap Arc for {}", tenant_id)))?
+                .close()
+                .map_err(|e| {
+                    MultiTenantError::DatabaseError(format!("Failed to close connection for {}: {:?}", tenant_id, e))
+                })?;
+
             // Begin a transaction
             let tx = self.master_db.transaction()?;
 
@@ -183,7 +190,7 @@ impl MultiTenantManager
             Ok(())
         } else {
             error!("Attempted to delete tenant ({}) that does not exist.", tenant_id);
-            return Err(MultiTenantError::TenantNotFound(tenant_id.to_string()));
+            Err(MultiTenantError::TenantNotFound(tenant_id.to_string()))
         }
     }
 
