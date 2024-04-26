@@ -11,3 +11,5 @@ make that process easier. Its 100% in pure rust and if this project gains tracti
 bindings over to other languages (py, js, ...). Make a PR if you want to help.
 
 What im working on currently can be found in the [todo.md](./todo.md) file.
+
+[Mit Licence](./License)

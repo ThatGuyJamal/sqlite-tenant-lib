@@ -7,7 +7,7 @@ use log::{debug, error, info, warn};
 use rusqlite::{params, Connection, Statement, ToSql};
 
 use crate::statements::SqlStatement;
-use crate::{Configuration, DynamicStdError, MultiTenantError, SQLError, SQLResult};
+use crate::{Configuration, DynamicStdError, MultiTenantError, SQLResult};
 
 type TenantId = String;
 
@@ -66,15 +66,16 @@ pub struct MultiTenantManager
 impl MultiTenantManager
 {
     /// Created a new tenant manager.
-    pub fn new(config: Configuration) -> Result<Self, SQLError>
+    pub fn new(config: Configuration) -> SQLResult<Self>
     {
-        let master_db = match config.master_db_path.clone() {
+        let mut master_db = match config.master_db_path.clone() {
             Some(path) => Connection::open(path),
             None => Connection::open_in_memory(),
         }
         .unwrap_or_else(|e| panic!("Failed to open database: {}", e));
 
-        MultiTenantManager::init_master_db(&master_db)?;
+        // todo - handle this error conversion with '?'
+        MultiTenantManager::init_master_db(&mut master_db).expect("Failed to init master database");
 
         let tenants = match MultiTenantManager::load_tenants(&master_db) {
             Ok(tenants) => tenants,
@@ -122,7 +123,7 @@ impl MultiTenantManager
     /// `tenant_id` - used to track a connection to a sqlite db. ID generation should be handled by the library user.
     ///
     /// `path` - to the db file. If `None` is passed, the tenant will be created as an in-memory database.
-    pub fn add_tenant(&self, tenant_id: &str, path: Option<PathBuf>) -> SQLResult<(), MultiTenantError>
+    pub fn add_tenant(&mut self, tenant_id: &str, path: Option<PathBuf>) -> SQLResult<(), MultiTenantError>
     {
         let mut tenants = self.tenants.write().unwrap();
 
@@ -133,16 +134,24 @@ impl MultiTenantManager
 
         let connection = TenantConnection::open(path.clone())?;
 
-        tenants.insert(tenant_id.to_string(), connection);
+        // Begin a transaction
+        let tx = self.master_db.transaction()?;
 
-        self.master_db.execute(
+        tx.execute(
             SqlStatement::InsertAddTenant.as_str(),
             params![
-                tenant_id,
-                path.as_ref().and_then(|p| p.to_str()).map(|p| p.to_string()),
-                path.is_some()
-            ],
+            tenant_id,
+            path.as_ref().and_then(|p| p.to_str()).unwrap_or_default(), // Default to empty string if path is None
+            path.is_some()
+        ],
         )?;
+
+        if let Err(err) = tx.commit() {
+            debug!("Failed to commit transaction: {}", err);
+            return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+        }
+
+        tenants.insert(tenant_id.to_string(), connection);
 
         info!("Added ({}) tenant.", tenant_id);
 
@@ -150,13 +159,21 @@ impl MultiTenantManager
     }
 
     /// Removes a tenant connection from the manager
-    pub fn remove_tenant(&self, tenant_id: &str) -> SQLResult<(), MultiTenantError>
+    pub fn remove_tenant(&mut self, tenant_id: &str) -> SQLResult<(), MultiTenantError>
     {
         let mut tenants = self.tenants.write().unwrap();
 
         if let Some(_) = tenants.remove(tenant_id) {
-            self.master_db
-                .execute(SqlStatement::DeleteRemoveTenant.as_str(), params![tenant_id])?;
+            // Begin a transaction
+            let tx = self.master_db.transaction()?;
+
+            tx.execute(SqlStatement::DeleteRemoveTenant.as_str(), params![tenant_id])?;
+
+            if let Err(err) = tx.commit() {
+                debug!("Failed to commit transaction: {}", err);
+                return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+            }
+
             debug!("Deleted ({}) tenant.", tenant_id);
             Ok(())
         } else {
@@ -164,6 +181,7 @@ impl MultiTenantManager
             return Err(MultiTenantError::TenantNotFound(tenant_id.to_string()));
         }
     }
+
 
     /// Get a tenant connection based on id
     pub fn get_connection(&self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, DynamicStdError>
@@ -189,9 +207,16 @@ impl MultiTenantManager
     }
 
     /// Creates the master database if none exist yet.
-    fn init_master_db(conn: &Connection) -> SQLResult<()>
+    fn init_master_db(conn: &mut Connection) -> SQLResult<(), MultiTenantError>
     {
-        conn.execute(SqlStatement::CreateMasterDb.as_str(), [])?;
+        let tx = conn.transaction()?;
+        
+        tx.execute(SqlStatement::CreateMasterDb.as_str(), [])?;
+
+        if let Err(err) = tx.commit() {
+            debug!("Failed to commit transaction: {}", err);
+            return Err(MultiTenantError::DatabaseError(format!("Failed to commit transaction: {}", err)));
+        }
 
         Ok(())
     }
@@ -232,7 +257,6 @@ mod tests
     use tempfile::tempdir;
 
     use super::*;
-    use crate::LogLevel;
 
     #[test]
     fn test_master_db_setup()
@@ -250,7 +274,7 @@ mod tests
     #[test]
     fn test_add_and_remove_tenants()
     {
-        let manager = MultiTenantManager::new(Configuration {
+        let mut manager = MultiTenantManager::new(Configuration {
             master_db_path: None,
             log_level: None,
             log_dir: None,
@@ -294,7 +318,7 @@ mod tests
     #[test]
     fn test_sql_query()
     {
-        let manager = MultiTenantManager::new(Configuration {
+        let mut manager = MultiTenantManager::new(Configuration {
             master_db_path: None,
             log_level: None,
             log_dir: None,

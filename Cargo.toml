@@ -4,6 +4,15 @@ description = "A libary for managing multiple sqlite databases with ease"
 version = "0.1.0"
 edition = "2021"
 publish = false
+repository = "https://github.com/ThatGuyJamal/sqlite-tenant-lib"
+documentation = "https://docs.rs/sqlite-tenant"
+resolver = "2"
+license = "MIT"
+
+authors = ["ThatGuyJamal <thatguyjamalbiz@gmai.com>"]
+include = ["Cargo.toml", "License", "README.md", "src/", "examples/", "bin/"]
+categories = ["database", "database-implementations", "data-structures"]
+readme = "./readme.md"
 
 [dependencies]
 rusqlite = { version = "0.31.0", features = ["bundled"] }
@@ -12,3 +21,15 @@ flexi_logger = { version = "0.28.0" }
 
 [dev-dependencies]
 tempfile = "3.10.1"
+
+# cargo run --example user-management
+[[example]]
+name = "user-management"
+path = "./examples/user-management.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+[profile.release.package."*"]
+opt-level = 3

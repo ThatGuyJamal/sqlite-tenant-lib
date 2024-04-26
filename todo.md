@@ -3,7 +3,8 @@
 - [x] Improve error handling with custom error types
 - [ ] Documentation for public functions and structs
 - [x] Configuration options for customizable behavior
-- [ ] Logging support for visibility into internal operations
+- [x] Logging support for visibility into internal operations
+- [x] Master Db uses SQL transactions for all writes
 - [ ] Migration support for managing schema changes
 - [ ] Mechanisms for tenant data isolation
 - [ ] Comprehensive unit tests covering all edge cases
@@ -14,3 +15,4 @@
 
 ## Known Bugs
 
+- [Example](./examples/user-management.rs) is having problems saving colum id. Need to fix this from being null on tenant inserts...

@@ -18,10 +18,10 @@ impl SqlStatement
                 "
                 CREATE TABLE IF NOT EXISTS tenants (
                     id TEXT PRIMARY KEY,
-                    tenant_id TEXT,
+                    tenant_id TEXT NOT NULL,
                     tenant_path TEXT,
-                    tenant_has_path INTEGER,
-                    created_at TEXT
+                    tenant_has_path INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
                 )"
             }
             SqlStatement::SelectTenantsOnLoad => "SELECT id, tenant_path, tenant_has_path FROM tenants",
