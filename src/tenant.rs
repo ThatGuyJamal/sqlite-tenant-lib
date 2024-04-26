@@ -18,7 +18,7 @@ pub(crate) struct MasterDbTable
 {
     id: String,
     tenant_id: String,
-    tenant_path: String,
+    tenant_path: Option<String>,
     // 0 = false, 1 = true
     tenant_has_path: i64,
     created_at: String,
@@ -29,7 +29,6 @@ pub struct TenantConnection
 {
     #[allow(dead_code)]
     // Connection to the sqlite API.
-    // We use a lifetime pointer here so our program can manage connections not control them explicitly.
     pub(crate) connection: Arc<Connection>,
 }
 
