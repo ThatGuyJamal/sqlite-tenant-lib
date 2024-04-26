@@ -11,6 +11,7 @@
 - [ ] Integration tests for real-world scenarios
 - [ ] Example usage demonstrating various scenarios
 - [ ] Engage with the Rust community for feedback and contributions
+- [ ] Add tenant connection limits for config
 
 
 ## Known Bugs
