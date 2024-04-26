@@ -25,12 +25,7 @@ fn main()
     }
 
     println!("Welcome to the User Management Console!");
-    println!("Enter '1' to add a user to database 1");
-    println!("Enter '2' to add a user to database 2");
-    println!("Enter 'f1' to find a user by username in database 1");
-    println!("Enter 'f2' to find a user by username in database 2");
-    println!("Enter 'h' for help.");
-    println!("Enter 'q' to quit");
+    print_help_msg();
 
     loop {
         let mut input = String::new();
@@ -145,7 +140,6 @@ fn create_user_db(conn: &Connection)
 
 fn print_help_msg()
 {
-    println!("Help message:");
     println!("Enter '1' to add a user to database 1");
     println!("Enter '2' to add a user to database 2");
     println!("Enter 'f1' to find a user by username in database 1");
