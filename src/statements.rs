@@ -20,14 +20,13 @@ impl SqlStatement
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tenant_id TEXT NOT NULL,
                     tenant_path TEXT,
-                    tenant_has_path INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    tenant_has_path INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )"
             }
             SqlStatement::SelectTenantsOnLoad => "SELECT tenant_id, tenant_path, tenant_has_path FROM tenants",
             SqlStatement::InsertAddTenant => {
-                "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path, created_at) VALUES (?1, ?2, ?3, \
-                 CURRENT_TIMESTAMP)"
+                "INSERT INTO tenants (tenant_id, tenant_path, tenant_has_path) VALUES (?1, ?2, ?3)"
             }
             SqlStatement::DeleteRemoveTenant => "DELETE FROM tenants WHERE id = ?1",
         }
