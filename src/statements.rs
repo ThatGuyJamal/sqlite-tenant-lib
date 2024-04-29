@@ -1,5 +1,17 @@
 // https://www.sqlite.org/datatype3.html
 
+#[allow(dead_code)]
+#[derive(Debug)]
+/// Rust type representation of our SQL master table.
+pub(crate) struct MasterDbTable
+{
+    id: String,
+    tenant_id: String,
+    tenant_path: Option<String>,
+    tenant_has_path: i64, // 0 = false, 1 = true
+    created_at: String,
+}
+
 /// SQL statements used in the tenant manager.
 pub(crate) enum SqlStatement
 {
