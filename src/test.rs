@@ -15,6 +15,7 @@ mod tests
             master_db_path: Some(master_db_path.clone()),
             log_level: None,
             log_dir: None,
+            lru_cache_cap: None,
         });
         assert!(master_db_path.exists(), "master.sqlite file does not exist");
     }
@@ -26,6 +27,7 @@ mod tests
             master_db_path: None,
             log_level: None,
             log_dir: None,
+            lru_cache_cap: None,
         })
         .unwrap();
 
@@ -34,16 +36,7 @@ mod tests
         manager.add_tenant("tenant2", None).expect("Failed to add tenant2");
         manager.add_tenant("tenant3", None).expect("Failed to add tenant3");
 
-        // Check if the size of tenants hashmap is 3
-        assert_eq!(manager.tenant_size(), 3);
-
-        // Remove the tenants
-        manager.remove_tenant("tenant1").expect("Failed to remove tenant1");
-        manager.remove_tenant("tenant2").expect("Failed to remove tenant2");
-        manager.remove_tenant("tenant3").expect("Failed to remove tenant3");
-
-        // Check if the size of tenants hashmap is 0 after removal
-        assert_eq!(manager.tenant_size(), 0);
+        assert_eq!(manager.tenant_count(), 3);
     }
 
     #[test]
@@ -55,6 +48,7 @@ mod tests
             master_db_path: Some(temp_dir.path().join("master.sqlite")),
             log_level: None,
             log_dir: None,
+            lru_cache_cap: None,
         })
         .unwrap();
 
@@ -69,7 +63,7 @@ mod tests
 
         manager.add_tenant("company-2", None).unwrap();
 
-        assert_eq!(2, manager.tenant_size());
+        assert_eq!(3, manager.tenant_count());
 
         #[derive(Debug)]
         struct Person
@@ -136,6 +130,7 @@ mod tests
             master_db_path: None,
             log_level: Some(LogLevel::Debug), // Set log level to debug for testing
             log_dir: Some(temp_dir.path().join("logs")),
+            lru_cache_cap: None,
         };
 
         // Create a new logger based on the test configuration

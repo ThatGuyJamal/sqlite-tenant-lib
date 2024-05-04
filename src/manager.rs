@@ -1,13 +1,16 @@
-use std::collections::HashMap;
+extern crate lru;
+
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use flexi_logger::{FileSpec, Logger};
 use log::{debug, error, info, warn};
-use rusqlite::{params, Connection, Statement, ToSql};
+use lru::LruCache;
+use rusqlite::{params, Connection};
 
 use crate::config::Configuration;
-use crate::error::{DynamicStdError, MultiTenantError, SQLResult};
+use crate::error::{MultiTenantError, SQLResult};
 use crate::statements::SqlStatement;
 use crate::tenant::TenantConnection;
 
@@ -17,7 +20,7 @@ pub struct MultiTenantManager
 {
     /// The master database manages all the data for other tenants such as lookups, permissions, etc.
     pub(crate) master_db: Connection,
-    pub(crate) tenants: Arc<RwLock<HashMap<TenantId, TenantConnection>>>,
+    pub(crate) cache: LruCache<TenantId, TenantConnection>,
 }
 
 impl MultiTenantManager
@@ -31,13 +34,7 @@ impl MultiTenantManager
         }
         .unwrap_or_else(|e| panic!("Failed to open database: {}", e));
 
-        // todo - handle this error conversion with '?'
         MultiTenantManager::init_master_db(&mut master_db).expect("Failed to init master database");
-
-        let tenants = match MultiTenantManager::load_tenants(&master_db) {
-            Ok(tenants) => tenants,
-            Err(e) => panic!("Failed to load tenants: {}", e),
-        };
 
         // Set up the logger settings for the manager
         if let Some(log_level) = config.log_level {
@@ -70,7 +67,7 @@ impl MultiTenantManager
 
         Ok(Self {
             master_db,
-            tenants: Arc::new(RwLock::new(tenants)),
+            cache: LruCache::new(NonZeroUsize::new(config.lru_cache_cap.unwrap_or(150)).unwrap()),
         })
     }
 
@@ -81,13 +78,6 @@ impl MultiTenantManager
     /// `path` - to the db file. If `None` is passed, the tenant will be created as an in-memory database.
     pub fn add_tenant(&mut self, tenant_id: &str, path: Option<PathBuf>) -> SQLResult<(), MultiTenantError>
     {
-        let mut tenants = self.tenants.write().unwrap();
-
-        if tenants.contains_key(tenant_id) {
-            debug!("Attempted to add tenant ({}) but it already exist.", tenant_id);
-            return Err(MultiTenantError::TenantAlreadyExists(tenant_id.to_string()));
-        }
-
         // Begin a transaction
         let tx = self.master_db.transaction()?;
 
@@ -109,7 +99,7 @@ impl MultiTenantManager
         }
 
         let connection = TenantConnection::open(path.clone())?;
-        tenants.insert(tenant_id.to_string(), connection);
+        self.cache.put(tenant_id.to_string(), connection);
 
         info!("Added ({}) tenant.", tenant_id);
 
@@ -119,9 +109,7 @@ impl MultiTenantManager
     /// Removes a tenant connection from the manager
     pub fn remove_tenant(&mut self, tenant_id: &str) -> SQLResult<(), MultiTenantError>
     {
-        let mut tenants = self.tenants.write().unwrap();
-
-        if let Some(tenant) = tenants.remove(tenant_id) {
+        if let Some(tenant) = self.cache.pop(tenant_id) {
             // Close the connection held within the Arc
             Arc::try_unwrap(tenant.connection)
                 .map_err(|_| MultiTenantError::DatabaseError(format!("Failed to unwrap Arc for {}", tenant_id)))?
@@ -152,74 +140,76 @@ impl MultiTenantManager
     }
 
     /// Get a tenant connection based on id
-    pub fn get_connection(&self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, DynamicStdError>
+    pub fn get_connection(&mut self, tenant_id: &str) -> SQLResult<Option<TenantConnection>, MultiTenantError>
     {
-        let tenants = self.tenants.read().unwrap();
-
-        if let Some(connection) = tenants.get(tenant_id).cloned() {
-            debug!("Retrieving ({}) sqlite connection.", tenant_id);
-            Ok(Option::from(connection))
+        if let Some(connection) = self.cache.get_mut(tenant_id) {
+            debug!("Retrieving ({}) sqlite connection from cache.", tenant_id);
+            Ok(Some(connection.clone()))
         } else {
             warn!(
-                "Attempted to retrieve ({}) sqlite connection but it was not found in cache.",
+                "Attempted to retrieve ({}) sqlite connection but it was not found in cache... searching database...",
                 tenant_id
             );
-            Ok(None)
+
+            // If connection not found in cache, search the database
+            match Self::load_tenant_from_db(&mut self.master_db, tenant_id) {
+                Ok(connection) => {
+                    self.cache.put(tenant_id.to_string(), connection.clone());
+                    debug!("Retrieving ({}) sqlite connection from database.", tenant_id);
+                    Ok(Some(connection))
+                }
+                Err(e) => Err(e),
+            }
         }
     }
 
     /// Gets the current amount of tenants in the database.
-    pub fn tenant_size(&self) -> usize
+    pub fn tenant_count(&self) -> usize
     {
-        self.tenants.read().unwrap().len()
+        self.master_db
+            .query_row::<usize, _, _>(SqlStatement::SelectTenantCounts.as_str(), [], |row| row.get(0))
+            .unwrap_or_else(|err| {
+                error!("Error retrieving tenant count: {}", err);
+                0 // Return 0 if there's an error
+            })
     }
 
     /// Creates the master database if none exist yet.
-    fn init_master_db(conn: &mut Connection) -> SQLResult<(), MultiTenantError>
+    fn init_master_db(conn: &mut Connection) -> SQLResult<()>
     {
         let tx = conn.transaction()?;
 
         tx.execute(SqlStatement::CreateMasterDb.as_str(), [])?;
-
-        if let Err(err) = tx.commit() {
-            debug!("Failed to commit transaction: {}", err);
-            return Err(MultiTenantError::DatabaseError(format!(
-                "Failed to commit transaction: {}",
-                err
-            )));
-        }
+        tx.commit()?;
 
         Ok(())
     }
 
-    /// Loads the current database tenants into memory. This way developers can get their handles.
-    fn load_tenants(master_db: &Connection) -> SQLResult<HashMap<TenantId, TenantConnection>>
+    /// Load a tenant connection from the database
+    fn load_tenant_from_db(master_db: &mut Connection, tenant_id: &str) -> SQLResult<TenantConnection, MultiTenantError>
     {
-        let mut statement: Statement = master_db.prepare(SqlStatement::SelectTenantsOnLoad.as_str())?;
+        let mut statement = master_db.prepare(SqlStatement::SelectTenant.as_str())?;
+        let mut rows = statement.query(params![tenant_id])?;
 
-        // see - https://docs.rs/rusqlite/0.31.0/rusqlite/trait.Params.html#dynamic-parameter-list
-        let rows = statement.query_map::<_, &[&dyn ToSql], _>(&[], |row| {
-            let tenant_id: String = row.get(0)?;
-            let tenant_path: Option<String> = row.get(1)?;
-            let tenant_has_path: bool = row.get(2)?;
+        if let Some(row) = rows.next()? {
+            let path: Option<String> = row.get(0)?;
+            let has_path: bool = row.get(1)?;
 
-            let connection: TenantConnection = if tenant_has_path {
-                TenantConnection::open(Some(tenant_path.expect("Expected path, but found None")))?
+            let connection = if has_path {
+                TenantConnection::open(path.map(PathBuf::from))?
             } else {
                 TenantConnection::open(None::<&Path>)?
             };
 
-            Ok((tenant_id, connection))
-        })?;
+            debug!("found {} in the database...", tenant_id);
 
-        let mut tenants = HashMap::<TenantId, TenantConnection>::new();
-        for result in rows {
-            let (tenant_id, connection) = result?;
-            tenants.insert(tenant_id, connection);
+            Ok(connection)
+        } else {
+            warn!("Tenant ({}) not found in database.", tenant_id);
+            Err(MultiTenantError::TenantNotFound(format!(
+                "Tenant ({}) not found in database.",
+                tenant_id
+            )))
         }
-
-        debug!("Loaded {} tenants into cache from the master db.", tenants.len());
-
-        Ok(tenants)
     }
 }

@@ -12,4 +12,8 @@ pub struct Configuration
     pub log_level: Option<LogLevel>,
     /// The directory logs will be written to, if `None` it will default to 'logs' in your project root.
     pub log_dir: Option<PathBuf>,
+    /// The max captivity of connections to hold for the database manager.
+    /// If `None` is provided, the cache will default to 150.
+    /// https://en.wikipedia.org/wiki/Cache_replacement_policies
+    pub lru_cache_cap: Option<usize>,
 }

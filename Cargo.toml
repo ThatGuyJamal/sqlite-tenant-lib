@@ -18,6 +18,7 @@ readme = "./readme.md"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 log = { version = "0.4.21" }
 flexi_logger = { version = "0.28.0" }
+lru = "0.12.3"
 
 [dev-dependencies]
 tempfile = "3.10.1"

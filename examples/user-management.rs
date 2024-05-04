@@ -9,6 +9,7 @@ fn main()
         master_db_path: Some(PathBuf::new().join("./examples/db/master.sqlite")),
         log_level: Some(LogLevel::Debug),
         log_dir: None,
+        lru_cache_cap: Some(5),
     })
     .expect("Failed to initialize multi-tenant manager");
 
@@ -32,11 +33,11 @@ fn main()
         io::stdin().read_line(&mut input).expect("Failed to read input");
 
         match input.trim() {
-            "1" => handle_user_action(&manager, "user_db1", UserAction::Add),
-            "2" => handle_user_action(&manager, "user_db2", UserAction::Add),
+            "1" => handle_user_action(&mut manager, "user_db1", UserAction::Add),
+            "2" => handle_user_action(&mut manager, "user_db2", UserAction::Add),
             "q" => break,
-            "f1" => handle_user_action(&manager, "user_db1", UserAction::Find),
-            "f2" => handle_user_action(&manager, "user_db2", UserAction::Find),
+            "f1" => handle_user_action(&mut manager, "user_db1", UserAction::Find),
+            "f2" => handle_user_action(&mut manager, "user_db2", UserAction::Find),
             "h" => print_help_msg(),
             _ => println!("Invalid input, please try again"),
         }
@@ -49,7 +50,7 @@ enum UserAction
     Find,
 }
 
-fn handle_user_action(manager: &MultiTenantManager, db_name: &str, action: UserAction)
+fn handle_user_action(manager: &mut MultiTenantManager, db_name: &str, action: UserAction)
 {
     match action {
         UserAction::Add => add_user(manager, db_name),
@@ -57,7 +58,7 @@ fn handle_user_action(manager: &MultiTenantManager, db_name: &str, action: UserA
     }
 }
 
-fn add_user(manager: &MultiTenantManager, db_name: &str)
+fn add_user(manager: &mut MultiTenantManager, db_name: &str)
 {
     println!("Enter username:");
     let username = read_input("Failed to read username");
@@ -82,7 +83,7 @@ fn add_user(manager: &MultiTenantManager, db_name: &str)
     }
 }
 
-fn find_user(manager: &MultiTenantManager, db_name: &str)
+fn find_user(manager: &mut MultiTenantManager, db_name: &str)
 {
     println!("Enter username to search:");
     let username = read_input("Failed to read username");
