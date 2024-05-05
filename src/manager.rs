@@ -153,11 +153,12 @@ impl MultiTenantManager
 
             // If connection not found in cache, search the database
             match Self::load_tenant_from_db(&mut self.master_db, tenant_id) {
-                Ok(connection) => {
+                Ok(Some(connection)) => {
                     self.cache.put(tenant_id.to_string(), connection.clone());
                     debug!("Retrieving ({}) sqlite connection from database.", tenant_id);
                     Ok(Some(connection))
                 }
+                Ok(None) => Ok(None),
                 Err(e) => Err(e),
             }
         }
@@ -186,7 +187,10 @@ impl MultiTenantManager
     }
 
     /// Load a tenant connection from the database
-    fn load_tenant_from_db(master_db: &mut Connection, tenant_id: &str) -> SQLResult<TenantConnection, MultiTenantError>
+    fn load_tenant_from_db(
+        master_db: &mut Connection,
+        tenant_id: &str,
+    ) -> SQLResult<Option<TenantConnection>, MultiTenantError>
     {
         let mut statement = master_db.prepare(SqlStatement::SelectTenant.as_str())?;
         let mut rows = statement.query(params![tenant_id])?;
@@ -203,13 +207,10 @@ impl MultiTenantManager
 
             debug!("found {} in the database...", tenant_id);
 
-            Ok(connection)
+            Ok(Some(connection))
         } else {
             warn!("Tenant ({}) not found in database.", tenant_id);
-            Err(MultiTenantError::TenantNotFound(format!(
-                "Tenant ({}) not found in database.",
-                tenant_id
-            )))
+            Ok(None)
         }
     }
 }
